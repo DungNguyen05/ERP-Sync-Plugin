@@ -1,17 +1,17 @@
 {
-    "id": "com.mattermost.plugin-starter-template",
-    "name": "Plugin Starter Template",
-    "description": "This plugin serves as a starting point for writing a Mattermost plugin.",
+    "id": "com.example.erpnext-integration",
+    "name": "ERPNext Integration",
+    "description": "This plugin integrates with ERPNext to fetch employee data",
     "homepage_url": "https://github.com/mattermost/mattermost-plugin-starter-template",
     "support_url": "https://github.com/mattermost/mattermost-plugin-starter-template/issues",
+    "release_notes_url": "https://github.com/mattermost/mattermost-plugin-starter-template/releases",
     "icon_path": "assets/starter-template-icon.svg",
-    "min_server_version": "6.2.1",
+    "version": "1.0.0",
+    "min_server_version": "7.0.0",
     "server": {
         "executables": {
             "linux-amd64": "server/dist/plugin-linux-amd64",
-            "linux-arm64": "server/dist/plugin-linux-arm64",
             "darwin-amd64": "server/dist/plugin-darwin-amd64",
-            "darwin-arm64": "server/dist/plugin-darwin-arm64",
             "windows-amd64": "server/dist/plugin-windows-amd64.exe"
         }
     },
@@ -19,8 +19,31 @@
         "bundle_path": "webapp/dist/main.js"
     },
     "settings_schema": {
-        "header": "",
-        "footer": "",
-        "settings": []
+        "header": "Configure ERPNext Integration",
+        "footer": "For more information, visit the ERPNext documentation.",
+        "settings": [
+            {
+                "key": "ERPNextURL",
+                "display_name": "ERPNext URL",
+                "type": "text",
+                "help_text": "The URL of your ERPNext instance (e.g., https://erp.sphoton.com)",
+                "placeholder": "https://erp.sphoton.com",
+                "default": "https://erp.sphoton.com"
+            },
+            {
+                "key": "ERPNextAPIKey",
+                "display_name": "ERPNext API Key",
+                "type": "text",
+                "help_text": "The API key for your ERPNext instance",
+                "placeholder": "Enter your API key"
+            },
+            {
+                "key": "ERPNextAPISecret",
+                "display_name": "ERPNext API Secret",
+                "type": "text",
+                "help_text": "The API secret for your ERPNext instance",
+                "placeholder": "Enter your API secret"
+            }
+        ]
     }
 }

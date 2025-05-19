@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mattermost/mattermost-plugin-starter-template/server/command"
+	"github.com/mattermost/mattermost-plugin-starter-template/server/erpnext"
 	"github.com/mattermost/mattermost-plugin-starter-template/server/store/kvstore"
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
@@ -27,6 +28,9 @@ type Plugin struct {
 	// commandClient is the client used to register and execute slash commands.
 	commandClient command.Command
 
+	// erpNextClient is the client used to interact with ERPNext API.
+	erpNextClient *erpnext.Client
+
 	backgroundJob *cluster.Job
 
 	// configurationLock synchronizes access to the configuration.
@@ -39,12 +43,31 @@ type Plugin struct {
 
 // OnActivate is invoked when the plugin is activated. If an error is returned, the plugin will be deactivated.
 func (p *Plugin) OnActivate() error {
+	// Initialize the Mattermost API client
 	p.client = pluginapi.NewClient(p.API, p.Driver)
 
+	// Initialize the KV store client
 	p.kvstore = kvstore.NewKVStore(p.client)
 
+	// Initialize the command handler
 	p.commandClient = command.NewCommandHandler(p.client)
 
+	// Initialize the ERPNext client based on configuration
+	config := p.getConfiguration()
+	if config.ERPNextURL != "" && config.ERPNextAPIKey != "" && config.ERPNextAPISecret != "" {
+		p.erpNextClient = erpnext.NewClient(
+			config.ERPNextURL,
+			config.ERPNextAPIKey,
+			config.ERPNextAPISecret,
+		)
+
+		// Set the ERPNext client in the command handler
+		p.commandClient.SetERPNextClient(p.erpNextClient)
+	} else {
+		p.API.LogInfo("ERPNext client not initialized: configuration missing. This is expected on first startup.")
+	}
+
+	// Schedule the background job
 	job, err := cluster.Schedule(
 		p.API,
 		"BackgroundJob",
@@ -60,6 +83,40 @@ func (p *Plugin) OnActivate() error {
 	return nil
 }
 
+// OnConfigurationChange is invoked when configuration changes may have been made.
+func (p *Plugin) OnConfigurationChange() error {
+	var configuration = new(configuration)
+
+	// Load the public configuration fields from the Mattermost server configuration.
+	if err := p.API.LoadPluginConfiguration(configuration); err != nil {
+		return errors.Wrap(err, "failed to load plugin configuration")
+	}
+
+	p.setConfiguration(configuration)
+
+	// Update the ERPNext client when configuration changes
+	if configuration.ERPNextURL != "" && configuration.ERPNextAPIKey != "" && configuration.ERPNextAPISecret != "" {
+		p.erpNextClient = erpnext.NewClient(
+			configuration.ERPNextURL,
+			configuration.ERPNextAPIKey,
+			configuration.ERPNextAPISecret,
+		)
+
+		// Set the ERPNext client in the command handler
+		if p.commandClient != nil {
+			p.commandClient.SetERPNextClient(p.erpNextClient)
+		}
+	} else {
+		p.API.LogInfo("ERPNext client not initialized: configuration missing")
+		p.erpNextClient = nil
+		if p.commandClient != nil {
+			p.commandClient.SetERPNextClient(nil)
+		}
+	}
+
+	return nil
+}
+
 // OnDeactivate is invoked when the plugin is deactivated.
 func (p *Plugin) OnDeactivate() error {
 	if p.backgroundJob != nil {
@@ -70,7 +127,7 @@ func (p *Plugin) OnDeactivate() error {
 	return nil
 }
 
-// This will execute the commands that were registered in the NewCommandHandler function.
+// ExecuteCommand executes slash commands registered by this plugin.
 func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*model.CommandResponse, *model.AppError) {
 	response, err := p.commandClient.Handle(args)
 	if err != nil {
@@ -78,5 +135,3 @@ func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*mo
 	}
 	return response, nil
 }
-
-// See https://developers.mattermost.com/extend/plugins/server/reference/

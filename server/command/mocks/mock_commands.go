@@ -8,6 +8,7 @@ import (
 	reflect "reflect"
 
 	gomock "github.com/golang/mock/gomock"
+	erpnext "github.com/mattermost/mattermost-plugin-starter-template/server/erpnext"
 	model "github.com/mattermost/mattermost/server/public/model"
 )
 
@@ -35,11 +36,11 @@ func (m *MockCommand) EXPECT() *MockCommandMockRecorder {
 }
 
 // Handle mocks base method.
-func (m *MockCommand) Handle(arg0 *model.CommandArgs) (*model.CommandResponse, *model.AppError) {
+func (m *MockCommand) Handle(arg0 *model.CommandArgs) (*model.CommandResponse, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Handle", arg0)
 	ret0, _ := ret[0].(*model.CommandResponse)
-	ret1, _ := ret[1].(*model.AppError)
+	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
@@ -49,16 +50,14 @@ func (mr *MockCommandMockRecorder) Handle(arg0 interface{}) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Handle", reflect.TypeOf((*MockCommand)(nil).Handle), arg0)
 }
 
-// executeHelloCommand mocks base method.
-func (m *MockCommand) executeHelloCommand(arg0 *model.CommandArgs) *model.CommandResponse {
+// SetERPNextClient mocks base method.
+func (m *MockCommand) SetERPNextClient(arg0 *erpnext.Client) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "executeHelloCommand", arg0)
-	ret0, _ := ret[0].(*model.CommandResponse)
-	return ret0
+	m.ctrl.Call(m, "SetERPNextClient", arg0)
 }
 
-// executeHelloCommand indicates an expected call of executeHelloCommand.
-func (mr *MockCommandMockRecorder) executeHelloCommand(arg0 interface{}) *gomock.Call {
+// SetERPNextClient indicates an expected call of SetERPNextClient.
+func (mr *MockCommandMockRecorder) SetERPNextClient(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "executeHelloCommand", reflect.TypeOf((*MockCommand)(nil).executeHelloCommand), arg0)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetERPNextClient", reflect.TypeOf((*MockCommand)(nil).SetERPNextClient), arg0)
 }
