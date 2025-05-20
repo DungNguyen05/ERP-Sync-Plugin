@@ -152,13 +152,18 @@ func (h *Handler) executeEmployeeCommand(args *model.CommandArgs) *model.Command
 
 // executeMapUsersCommand handles the /mapusers command
 func (h *Handler) executeMapUsersCommand(args *model.CommandArgs) *model.CommandResponse {
+	h.client.Log.Info("MapUsers command started", "user", args.UserId)
+
 	// Check if ERPNext client is configured
 	if h.erpNextClient == nil {
+		h.client.Log.Error("ERPNext client is not configured")
 		return &model.CommandResponse{
-			ResponseType: model.CommandResponseTypeEphemeral,
+			ResponseType: model.CommandResponseTypeInChannel,
 			Text:         "ERPNext client is not configured properly. Please check the plugin settings.",
 		}
 	}
+
+	h.client.Log.Info("Fetching Mattermost users")
 
 	// Fetch all users from Mattermost
 	perPage := 200
@@ -170,7 +175,7 @@ func (h *Handler) executeMapUsersCommand(args *model.CommandArgs) *model.Command
 	if err != nil {
 		h.client.Log.Error("Failed to fetch users from Mattermost", "error", err)
 		return &model.CommandResponse{
-			ResponseType: model.CommandResponseTypeEphemeral,
+			ResponseType: model.CommandResponseTypeInChannel,
 			Text:         fmt.Sprintf("Failed to fetch users: %s", err.Error()),
 		}
 	}
@@ -192,7 +197,9 @@ func (h *Handler) executeMapUsersCommand(args *model.CommandArgs) *model.Command
 		// Try to find matching employee in ERPNext
 		employee, err := h.erpNextClient.GetEmployeeByEmail(user.Email)
 		if err != nil {
-			h.client.Log.Error("Error finding employee by email", "email", user.Email, "error", err)
+			h.client.Log.Error("Error finding employee by email",
+				"email", user.Email,
+				"error", err)
 			continue
 		}
 
@@ -205,7 +212,7 @@ func (h *Handler) executeMapUsersCommand(args *model.CommandArgs) *model.Command
 	// If no matches found
 	if matchedCount == 0 {
 		return &model.CommandResponse{
-			ResponseType: model.CommandResponseTypeEphemeral,
+			ResponseType: model.CommandResponseTypeInChannel,
 			Text:         "No Mattermost users matched with ERPNext employees by email.",
 		}
 	}
@@ -214,7 +221,7 @@ func (h *Handler) executeMapUsersCommand(args *model.CommandArgs) *model.Command
 	responseBuilder.WriteString(fmt.Sprintf("\n**Total matched users:** %d", matchedCount))
 
 	return &model.CommandResponse{
-		ResponseType: model.CommandResponseTypeEphemeral,
+		ResponseType: model.CommandResponseTypeInChannel,
 		Text:         responseBuilder.String(),
 	}
 }

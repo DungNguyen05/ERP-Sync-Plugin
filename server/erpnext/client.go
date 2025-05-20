@@ -80,7 +80,7 @@ func (c *Client) GetEmployees() ([]Employee, error) {
 
 // GetEmployeeByEmail finds an employee by company email
 func (c *Client) GetEmployeeByEmail(email string) (*Employee, error) {
-	// Create the filter parameter
+	// Create the filter parameter - try a more flexible search
 	filterParam := fmt.Sprintf(`[["company_email","=","%s"]]`, email)
 
 	// Build the URL with properly encoded query parameters
@@ -95,6 +95,9 @@ func (c *Client) GetEmployeeByEmail(email string) (*Employee, error) {
 	query.Add("filters", filterParam)
 	reqURL.RawQuery = query.Encode()
 
+	// Print the request URL for debugging (this would normally go to logs)
+	fmt.Printf("Making request to: %s\n", reqURL.String())
+
 	// Now create the request with the properly encoded URL
 	req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
 	if err != nil {
@@ -106,8 +109,6 @@ func (c *Client) GetEmployeeByEmail(email string) (*Employee, error) {
 	req.Header.Set("Authorization", authToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	// REMOVED LOGGER CODE HERE (line 108-109 in your error)
-
 	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to execute request")
@@ -117,17 +118,22 @@ func (c *Client) GetEmployeeByEmail(email string) (*Employee, error) {
 	// Read the response body
 	body, _ := io.ReadAll(resp.Body)
 
+	// Print response for debugging
+	fmt.Printf("Response status: %d\n", resp.StatusCode)
+	fmt.Printf("Response body: %s\n", string(body))
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("ERPNext API returned non-OK status code %d: %s", resp.StatusCode, string(body))
 	}
-
-	// REMOVED LOGGER CODE HERE (line 126-127 in your error)
 
 	// Parse the response
 	var employeeResp EmployeeResponse
 	if err := json.Unmarshal(body, &employeeResp); err != nil {
 		return nil, errors.Wrap(err, "failed to decode response: "+string(body))
 	}
+
+	// Print found employees for debugging
+	fmt.Printf("Found %d employees with email similar to %s\n", len(employeeResp.Data), email)
 
 	// If no employee found with that email
 	if len(employeeResp.Data) == 0 {
