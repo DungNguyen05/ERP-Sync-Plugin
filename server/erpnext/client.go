@@ -3,6 +3,7 @@
 package erpnext
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,9 +24,15 @@ type Client struct {
 
 // Employee represents an employee in ERPNext
 type Employee struct {
-	Name         string `json:"name"` // This is the employee ID
-	EmployeeName string `json:"employee_name,omitempty"`
-	CompanyEmail string `json:"company_email,omitempty"`
+	Name          string `json:"name,omitempty"` // This is the employee ID
+	CompanyEmail  string `json:"company_email,omitempty"`
+	FirstName     string `json:"first_name,omitempty"`
+	LastName      string `json:"last_name,omitempty"`
+	Gender        string `json:"gender,omitempty"`
+	DateOfBirth   string `json:"date_of_birth,omitempty"`
+	DateOfJoining string `json:"date_of_joining,omitempty"`
+	Status        string `json:"status,omitempty"`
+	CustomChatID  string `json:"custom_chat_id,omitempty"` // New field for Mattermost ID
 }
 
 // EmployeeResponse represents the response from ERPNext API when fetching employees
@@ -142,4 +149,78 @@ func (c *Client) GetEmployeeByEmail(email string) (*Employee, error) {
 
 	// Return the first matching employee
 	return &employeeResp.Data[0], nil
+}
+
+// CreateEmployee creates a new employee in ERPNext
+func (c *Client) CreateEmployee(employee *Employee) (*Employee, error) {
+	url := fmt.Sprintf("%s/api/resource/Employee", c.URL)
+
+	// The ERPNext API expects data in a specific format with a "doc" wrapper
+	requestBody := map[string]interface{}{
+		"doctype":         "Employee",
+		"company_email":   employee.CompanyEmail,
+		"first_name":      employee.FirstName,
+		"last_name":       employee.LastName,
+		"gender":          employee.Gender,
+		"date_of_birth":   employee.DateOfBirth,
+		"date_of_joining": employee.DateOfJoining,
+		"status":          employee.Status,
+		"custom_chat_id":  employee.CustomChatID,
+	}
+
+	// Convert to JSON
+	bodyData, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to marshal employee data")
+	}
+
+	// Print the request body for debugging
+	fmt.Printf("Request body: %s\n", string(bodyData))
+
+	// Create request
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(bodyData))
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create request")
+	}
+
+	// Set headers
+	authToken := fmt.Sprintf("token %s:%s", c.APIKey, c.APISecret)
+	req.Header.Set("Authorization", authToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	// Execute request
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to execute request")
+	}
+	defer resp.Body.Close()
+
+	// Read response body for logging and error handling
+	body, _ := io.ReadAll(resp.Body)
+
+	// Log the response for debugging
+	fmt.Printf("Response status: %d\n", resp.StatusCode)
+	fmt.Printf("Response body: %s\n", string(body))
+
+	// Handle response
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return nil, fmt.Errorf("ERPNext API returned status code %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse the response to get the created employee
+	var respData struct {
+		Data struct {
+			Name string `json:"name"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &respData); err != nil {
+		return nil, errors.Wrap(err, "failed to decode response: "+string(body))
+	}
+
+	// Return a new Employee with just the ID since that's what we need
+	return &Employee{
+		Name: respData.Data.Name,
+	}, nil
 }

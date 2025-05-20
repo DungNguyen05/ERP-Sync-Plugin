@@ -182,15 +182,31 @@ func (h *Handler) executeMapUsersCommand(args *model.CommandArgs) *model.Command
 
 	// Build response
 	var matchedCount int
+	var createdCount int
+	var skippedCount int
 	var responseBuilder strings.Builder
 	responseBuilder.WriteString("### Mattermost Users Mapped to ERPNext\n\n")
-	responseBuilder.WriteString("| Mattermost Username | Email | ERPNext Employee ID |\n")
-	responseBuilder.WriteString("|-------------------|-------|-------------------|\n")
+	responseBuilder.WriteString("| Mattermost Username | Email | First Name | Last Name | ERPNext Employee ID | Status |\n")
+	responseBuilder.WriteString("|-------------------|-------|------------|-----------|-------------------|--------|\n")
 
 	// Process each user
 	for _, user := range users {
 		// Skip if user has no email
 		if user.Email == "" {
+			h.client.Log.Debug("Skipping user with no email", "username", user.Username)
+			skippedCount++
+			continue
+		}
+
+		// Skip if user is a bot
+		if user.IsBot {
+			h.client.Log.Debug("Skipping bot user", "username", user.Username)
+			skippedCount++
+			responseBuilder.WriteString(fmt.Sprintf("| %s | %s | %s | %s | - | Skipped (Bot) |\n",
+				user.Username,
+				user.Email,
+				user.FirstName,
+				user.LastName))
 			continue
 		}
 
@@ -204,21 +220,67 @@ func (h *Handler) executeMapUsersCommand(args *model.CommandArgs) *model.Command
 		}
 
 		if employee != nil {
+			// Employee found - just map it
 			matchedCount++
-			responseBuilder.WriteString(fmt.Sprintf("| %s | %s | %s |\n", user.Username, user.Email, employee.Name))
+			responseBuilder.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | Existing |\n",
+				user.Username,
+				user.Email,
+				user.FirstName,
+				user.LastName,
+				employee.Name))
+		} else {
+			// Employee not found - create a new one
+			h.client.Log.Info("Creating new employee for Mattermost user",
+				"username", user.Username,
+				"email", user.Email)
+
+			// Create new employee with fixed values as specified
+			newEmployee := &erpnext.Employee{
+				CompanyEmail:  user.Email,
+				FirstName:     user.FirstName,
+				LastName:      user.LastName,
+				Gender:        "Male",       // Fixed as specified
+				DateOfBirth:   "2000-01-01", // Fixed as specified
+				DateOfJoining: "2000-01-01", // Fixed as specified
+				Status:        "Active",
+				CustomChatID:  user.Id, // Store Mattermost ID
+			}
+
+			// Call API to create the employee
+			createdEmployee, err := h.erpNextClient.CreateEmployee(newEmployee)
+			if err != nil {
+				h.client.Log.Error("Failed to create employee in ERPNext",
+					"email", user.Email,
+					"error", err)
+				responseBuilder.WriteString(fmt.Sprintf("| %s | %s | %s | %s | Error | Failed to create |\n",
+					user.Username,
+					user.Email,
+					user.FirstName,
+					user.LastName))
+				continue
+			}
+
+			createdCount++
+			responseBuilder.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | Created |\n",
+				user.Username,
+				user.Email,
+				user.FirstName,
+				user.LastName,
+				createdEmployee.Name))
 		}
 	}
 
-	// If no matches found
-	if matchedCount == 0 {
+	// If no matches or creations
+	if matchedCount == 0 && createdCount == 0 {
 		return &model.CommandResponse{
 			ResponseType: model.CommandResponseTypeInChannel,
-			Text:         "No Mattermost users matched with ERPNext employees by email.",
+			Text:         "No Mattermost users processed. Check the logs for errors.",
 		}
 	}
 
 	// Add summary
-	responseBuilder.WriteString(fmt.Sprintf("\n**Total matched users:** %d", matchedCount))
+	responseBuilder.WriteString(fmt.Sprintf("\n**Total matched users:** %d  \n**Total created users:** %d  \n**Total skipped users:** %d",
+		matchedCount, createdCount, skippedCount))
 
 	return &model.CommandResponse{
 		ResponseType: model.CommandResponseTypeInChannel,
