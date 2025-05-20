@@ -224,3 +224,61 @@ func (c *Client) CreateEmployee(employee *Employee) (*Employee, error) {
 		Name: respData.Data.Name,
 	}, nil
 }
+
+// UpdateEmployee updates an existing employee in ERPNext
+func (c *Client) UpdateEmployee(employee *Employee) (*Employee, error) {
+	// Create URL for updating specific employee by name (ID)
+	url := fmt.Sprintf("%s/api/resource/Employee/%s", c.URL, employee.Name)
+
+	// In ERPNext, when updating we only need to include the fields we want to change
+	requestBody := map[string]interface{}{
+		"custom_chat_id": employee.CustomChatID,
+	}
+
+	// Convert to JSON
+	bodyData, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to marshal employee update data")
+	}
+
+	// Print the request body for debugging
+	fmt.Printf("Update request to: %s\n", url)
+	fmt.Printf("Update request body: %s\n", string(bodyData))
+
+	// Create PUT request for updating
+	req, err := http.NewRequest(http.MethodPut, url, bytes.NewBuffer(bodyData))
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create update request")
+	}
+
+	// Set headers
+	authToken := fmt.Sprintf("token %s:%s", c.APIKey, c.APISecret)
+	req.Header.Set("Authorization", authToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	// Execute request
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to execute update request")
+	}
+	defer resp.Body.Close()
+
+	// Read response body for logging and error handling
+	body, _ := io.ReadAll(resp.Body)
+
+	// Log the response for debugging
+	fmt.Printf("Update response status: %d\n", resp.StatusCode)
+	fmt.Printf("Update response body: %s\n", string(body))
+
+	// Handle response
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		return nil, fmt.Errorf("ERPNext API returned status code %d when updating employee: %s",
+			resp.StatusCode, string(body))
+	}
+
+	// For update operations, ERPNext might return different formats than create
+	// In many cases, it just returns a success message without the full record
+	// We'll just return the original employee object since we don't need the response data
+	return employee, nil
+}

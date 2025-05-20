@@ -182,6 +182,7 @@ func (h *Handler) executeMapUsersCommand(args *model.CommandArgs) *model.Command
 
 	// Build response
 	var matchedCount int
+	var updatedCount int
 	var createdCount int
 	var skippedCount int
 	var responseBuilder strings.Builder
@@ -220,14 +221,52 @@ func (h *Handler) executeMapUsersCommand(args *model.CommandArgs) *model.Command
 		}
 
 		if employee != nil {
-			// Employee found - just map it
-			matchedCount++
-			responseBuilder.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | Existing |\n",
-				user.Username,
-				user.Email,
-				user.FirstName,
-				user.LastName,
-				employee.Name))
+			// Employee found - check if we need to update the custom_chat_id
+			if employee.CustomChatID != user.Id {
+				// Need to update the custom_chat_id field
+				h.client.Log.Info("Updating custom_chat_id for existing employee",
+					"email", user.Email,
+					"employee_id", employee.Name,
+					"mattermost_id", user.Id)
+
+				// Create an employee object with the updated custom_chat_id
+				updatedEmployee := &erpnext.Employee{
+					Name:         employee.Name,
+					CustomChatID: user.Id,
+				}
+
+				// Call API to update the employee
+				_, err := h.erpNextClient.UpdateEmployee(updatedEmployee)
+				if err != nil {
+					h.client.Log.Error("Failed to update employee custom_chat_id in ERPNext",
+						"email", user.Email,
+						"error", err)
+					responseBuilder.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | Update Failed |\n",
+						user.Username,
+						user.Email,
+						user.FirstName,
+						user.LastName,
+						employee.Name))
+					continue
+				}
+
+				updatedCount++
+				responseBuilder.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | Updated |\n",
+					user.Username,
+					user.Email,
+					user.FirstName,
+					user.LastName,
+					employee.Name))
+			} else {
+				// Already mapped correctly
+				matchedCount++
+				responseBuilder.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | Already Mapped |\n",
+					user.Username,
+					user.Email,
+					user.FirstName,
+					user.LastName,
+					employee.Name))
+			}
 		} else {
 			// Employee not found - create a new one
 			h.client.Log.Info("Creating new employee for Mattermost user",
@@ -270,8 +309,8 @@ func (h *Handler) executeMapUsersCommand(args *model.CommandArgs) *model.Command
 		}
 	}
 
-	// If no matches or creations
-	if matchedCount == 0 && createdCount == 0 {
+	// If no matches, updates or creations
+	if matchedCount == 0 && updatedCount == 0 && createdCount == 0 {
 		return &model.CommandResponse{
 			ResponseType: model.CommandResponseTypeInChannel,
 			Text:         "No Mattermost users processed. Check the logs for errors.",
@@ -279,8 +318,8 @@ func (h *Handler) executeMapUsersCommand(args *model.CommandArgs) *model.Command
 	}
 
 	// Add summary
-	responseBuilder.WriteString(fmt.Sprintf("\n**Total matched users:** %d  \n**Total created users:** %d  \n**Total skipped users:** %d",
-		matchedCount, createdCount, skippedCount))
+	responseBuilder.WriteString(fmt.Sprintf("\n**Total already mapped users:** %d  \n**Total updated users:** %d  \n**Total created users:** %d  \n**Total skipped users:** %d",
+		matchedCount, updatedCount, createdCount, skippedCount))
 
 	return &model.CommandResponse{
 		ResponseType: model.CommandResponseTypeInChannel,
