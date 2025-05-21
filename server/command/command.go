@@ -204,11 +204,13 @@ func (h *Handler) executeMapUsersCommand(args *model.CommandArgs) *model.Command
 	h.client.Log.Info("Fetching Mattermost users")
 
 	// Fetch all users from Mattermost
+	// Note: Setting Active: true will only return non-deleted users,
+	// but we'll still check DeleteAt for extra safety
 	perPage := 200
 	users, err := h.client.User.List(&model.UserGetOptions{
 		Page:    0,
 		PerPage: perPage,
-		Active:  true,
+		Active:  true, // Only fetch active (non-deleted) users
 	})
 	if err != nil {
 		h.client.Log.Error("Failed to fetch users from Mattermost", "error", err)
@@ -217,6 +219,12 @@ func (h *Handler) executeMapUsersCommand(args *model.CommandArgs) *model.Command
 			Text:         fmt.Sprintf("Failed to fetch users: %s", err.Error()),
 		}
 	}
+
+	// Log summary of users fetched
+	h.client.Log.Info("Fetched users from Mattermost",
+		"total_count", len(users),
+		"active_count", len(users), // Since we filtered by Active=true
+	)
 
 	// Build response
 	var matchedCount int
@@ -242,6 +250,18 @@ func (h *Handler) executeMapUsersCommand(args *model.CommandArgs) *model.Command
 			h.client.Log.Debug("Skipping bot user", "username", user.Username)
 			skippedCount++
 			responseBuilder.WriteString(fmt.Sprintf("| %s | %s | %s | %s | - | Skipped (Bot) |\n",
+				user.Username,
+				user.Email,
+				user.FirstName,
+				user.LastName))
+			continue
+		}
+
+		// Skip if user is deleted
+		if user.DeleteAt > 0 {
+			h.client.Log.Debug("Skipping deleted user", "username", user.Username, "deleteAt", user.DeleteAt)
+			skippedCount++
+			responseBuilder.WriteString(fmt.Sprintf("| %s | %s | %s | %s | - | Skipped (Deleted) |\n",
 				user.Username,
 				user.Email,
 				user.FirstName,
