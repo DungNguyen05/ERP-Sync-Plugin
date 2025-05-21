@@ -26,9 +26,8 @@
                 "key": "ERPNextURL",
                 "display_name": "ERPNext URL",
                 "type": "text",
-                "help_text": "The URL of your ERPNext instance (e.g., https://erp.sphoton.com)",
-                "placeholder": "https://erp.sphoton.com",
-                "default": "https://erp.sphoton.com"
+                "help_text": "The URL of your ERPNext instance (e.g., https://erp.example.com)",
+                "placeholder": "https://erp.example.com"
             },
             {
                 "key": "ERPNextAPIKey",
@@ -48,7 +47,7 @@
                 "key": "SyncUsers",
                 "display_name": "Sync Users",
                 "type": "custom",
-                "help_text": "Click to sync Mattermost users with ERPNext employees"
+                "help_text": "Sync users between Mattermost and ERPNext. Use 'Sync Mattermost → ERPNext' to update ERPNext employees with Mattermost user data. Use 'Sync ERPNext → Mattermost' to create Mattermost users from ERPNext employees."
             }
         ]
     }

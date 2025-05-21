@@ -73,37 +73,69 @@ func NewClient(url, apiKey, apiSecret string) *Client {
 	}
 }
 
-// GetEmployees fetches all employees from ERPNext
+// GetEmployees fetches all employees from ERPNext with pagination
 func (c *Client) GetEmployees() ([]Employee, error) {
-	url := fmt.Sprintf("%s/api/resource/Employee", c.URL)
+	allEmployees := []Employee{}
+	pageSize := 100
+	startIdx := 0
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to create request")
+	for {
+		// Build URL with paging parameters and fields we need
+		baseURL := fmt.Sprintf("%s/api/resource/Employee", c.URL)
+		reqURL, err := url.Parse(baseURL)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to parse URL")
+		}
+
+		// Add pagination parameters and specify fields to include
+		query := reqURL.Query()
+		query.Add("limit_start", fmt.Sprintf("%d", startIdx))
+		query.Add("limit_page_length", fmt.Sprintf("%d", pageSize))
+		query.Add("fields", `["name", "company_email", "first_name", "last_name", "gender", "date_of_birth", "date_of_joining", "status", "custom_chat_id"]`)
+		reqURL.RawQuery = query.Encode()
+
+		// Create the request
+		req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to create request")
+		}
+
+		// Set authorization header with token format: "token api_key:api_secret"
+		authToken := fmt.Sprintf("token %s:%s", c.APIKey, c.APISecret)
+		req.Header.Set("Authorization", authToken)
+		req.Header.Set("Content-Type", "application/json")
+
+		// Execute the request
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to execute request")
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return nil, fmt.Errorf("ERPNext API returned non-OK status code %d: %s", resp.StatusCode, string(body))
+		}
+
+		// Parse the response
+		var employeeResp EmployeeResponse
+		if err := json.NewDecoder(resp.Body).Decode(&employeeResp); err != nil {
+			return nil, errors.Wrap(err, "failed to decode response")
+		}
+
+		// Add the fetched employees to our result array
+		allEmployees = append(allEmployees, employeeResp.Data...)
+
+		// If we got fewer records than the page size, we've reached the end
+		if len(employeeResp.Data) < pageSize {
+			break
+		}
+
+		// Update start index for the next page
+		startIdx += pageSize
 	}
 
-	// Set authorization header with token format: "token api_key:api_secret"
-	authToken := fmt.Sprintf("token %s:%s", c.APIKey, c.APISecret)
-	req.Header.Set("Authorization", authToken)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to execute request")
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("ERPNext API returned non-OK status code %d: %s", resp.StatusCode, string(body))
-	}
-
-	var employeeResp EmployeeResponse
-	if err := json.NewDecoder(resp.Body).Decode(&employeeResp); err != nil {
-		return nil, errors.Wrap(err, "failed to decode response")
-	}
-
-	return employeeResp.Data, nil
+	return allEmployees, nil
 }
 
 // GetEmployeeByEmail finds an employee by company email

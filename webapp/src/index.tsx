@@ -22,15 +22,19 @@ export default class Plugin {
     public async initialize(registry: PluginRegistry, store: Store<GlobalState, Action<Record<string, unknown>>>) {
         // @ts-ignore - Ignore TypeScript errors for registerAdminConsoleCustomSetting
         registry.registerAdminConsoleCustomSetting('SyncUsers', (props: any) => {
-            const [isLoading, setIsLoading] = useState(false);
+            const [isMMToERPLoading, setIsMMToERPLoading] = useState(false);
+            const [isERPToMMLoading, setIsERPToMMLoading] = useState(false);
             const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
             const [showResults, setShowResults] = useState(false);
+            const [syncType, setSyncType] = useState<'MM_TO_ERP' | 'ERP_TO_MM' | null>(null);
             
-            const handleSync = async (): Promise<void> => {
-                setIsLoading(true);
+            // Function to handle Mattermost to ERPNext sync
+            const handleMMToERPSync = async (): Promise<void> => {
+                setIsMMToERPLoading(true);
+                setSyncType('MM_TO_ERP');
                 
                 try {
-                    const response = await fetch(`/plugins/${manifest.id}/api/v1/sync`, {
+                    const response = await fetch(`/plugins/${manifest.id}/api/v1/sync/mm-to-erp`, {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
@@ -52,7 +56,39 @@ export default class Plugin {
                     console.error('Error during sync:', error);
                     alert(`Error during sync: ${error instanceof Error ? error.message : 'Unknown error'}`);
                 } finally {
-                    setIsLoading(false);
+                    setIsMMToERPLoading(false);
+                }
+            };
+            
+            // Function to handle ERPNext to Mattermost sync
+            const handleERPToMMSync = async (): Promise<void> => {
+                setIsERPToMMLoading(true);
+                setSyncType('ERP_TO_MM');
+                
+                try {
+                    const response = await fetch(`/plugins/${manifest.id}/api/v1/sync/erp-to-mm`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Requested-With': 'XMLHttpRequest'
+                        },
+                        credentials: 'include'
+                    });
+                    
+                    if (response.ok) {
+                        const result = await response.json() as SyncResult;
+                        setSyncResult(result);
+                        setShowResults(true);
+                    } else {
+                        const errorText = await response.text();
+                        console.error('Sync failed:', errorText);
+                        alert(`Sync failed: ${response.status} ${response.statusText}\n${errorText}`);
+                    }
+                } catch (error) {
+                    console.error('Error during sync:', error);
+                    alert(`Error during sync: ${error instanceof Error ? error.message : 'Unknown error'}`);
+                } finally {
+                    setIsERPToMMLoading(false);
                 }
             };
             
@@ -60,20 +96,44 @@ export default class Plugin {
                 setShowResults(!showResults);
             };
             
+            // Get appropriate title for the sync results panel based on sync type
+            const getSyncTitle = (): string => {
+                if (syncType === 'MM_TO_ERP') {
+                    return 'Mattermost → ERPNext Sync Results';
+                }
+                if (syncType === 'ERP_TO_MM') {
+                    return 'ERPNext → Mattermost Sync Results';
+                }
+                return 'Sync Results';
+            };
+            
             return (
                 <div style={{width: '100%', maxWidth: '1200px'}}>
-                    <button
-                        className="btn btn-primary"
-                        disabled={isLoading}
-                        onClick={handleSync}
-                        style={{
-                            marginBottom: '20px', 
-                            padding: '8px 16px',
-                            fontSize: '14px'
-                        }}
-                    >
-                        {isLoading ? 'Syncing...' : 'Sync Now'}
-                    </button>
+                    <div style={{display: 'flex', gap: '20px', marginBottom: '30px'}}>
+                        <button
+                            className="btn btn-primary"
+                            disabled={isMMToERPLoading || isERPToMMLoading}
+                            onClick={handleMMToERPSync}
+                            style={{
+                                padding: '8px 16px',
+                                fontSize: '14px'
+                            }}
+                        >
+                            {isMMToERPLoading ? 'Syncing...' : 'Sync Mattermost → ERPNext'}
+                        </button>
+                        
+                        <button
+                            className="btn btn-primary"
+                            disabled={isMMToERPLoading || isERPToMMLoading}
+                            onClick={handleERPToMMSync}
+                            style={{
+                                padding: '8px 16px',
+                                fontSize: '14px'
+                            }}
+                        >
+                            {isERPToMMLoading ? 'Syncing...' : 'Sync ERPNext → Mattermost'}
+                        </button>
+                    </div>
                     
                     {syncResult && (
                         <div style={{marginTop: '15px', marginBottom: '30px'}}>
@@ -99,7 +159,7 @@ export default class Plugin {
                                     onClick={toggleResults}
                                 >
                                     <div style={{fontWeight: 'bold', fontSize: '15px'}}>
-                                        <span style={{marginRight: '10px'}}>Sync Summary:</span>
+                                        <span style={{marginRight: '10px'}}>{getSyncTitle()}:</span>
                                         <span style={{
                                             display: 'inline-block', 
                                             marginRight: '15px', 
@@ -113,6 +173,13 @@ export default class Plugin {
                                             color: syncResult.created_count > 0 ? '#26A970' : 'inherit'
                                         }}>
                                             Created: {syncResult.created_count}
+                                        </span>
+                                        <span style={{
+                                            display: 'inline-block',
+                                            marginRight: '15px',
+                                            color: '#333'
+                                        }}>
+                                            Matched: {syncResult.matched_count}
                                         </span>
                                         <span style={{
                                             display: 'inline-block',
@@ -165,6 +232,12 @@ export default class Plugin {
                                                 } else if (item.includes('Skipped')) {
                                                     backgroundColor = '#FFF8EE';
                                                     borderLeftColor = '#FF8800';
+                                                } else if (item.includes('Already Mapped')) {
+                                                    backgroundColor = '#F0F0F0';
+                                                    borderLeftColor = '#666666';
+                                                } else if (item.includes('Failed')) {
+                                                    backgroundColor = '#FFEEEE';
+                                                    borderLeftColor = '#E53935';
                                                 }
                                                 
                                                 return (

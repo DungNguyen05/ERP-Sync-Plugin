@@ -20,14 +20,17 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 
 	apiRouter.HandleFunc("/hello", p.HelloWorld).Methods(http.MethodGet)
 
-	// Add admin-only middleware for the sync endpoint
+	// Add admin-only middleware for the sync endpoints
 	syncRouter := apiRouter.PathPrefix("/sync").Subrouter()
 	syncRouter.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			p.AdminAuthorizationRequired(w, r, next)
 		})
 	})
-	syncRouter.HandleFunc("", p.SyncUsers).Methods(http.MethodPost)
+
+	// Sync endpoints with descriptive paths
+	syncRouter.HandleFunc("/mm-to-erp", p.SyncUsers).Methods(http.MethodPost)
+	syncRouter.HandleFunc("/erp-to-mm", p.SyncEmployees).Methods(http.MethodPost)
 
 	router.ServeHTTP(w, r)
 }
@@ -249,6 +252,226 @@ func (p *Plugin) SyncUsers(w http.ResponseWriter, r *http.Request) {
 			result.CreatedCount++
 			result.UserResults = append(result.UserResults,
 				fmt.Sprintf("%s (%s) - Created", user.Username, user.Email))
+		}
+	}
+
+	// Create response summary
+	summary := fmt.Sprintf(
+		"Sync completed. Matched: %d, Updated: %d, Created: %d, Skipped: %d",
+		result.MatchedCount, result.UpdatedCount, result.CreatedCount, result.SkippedCount,
+	)
+	p.API.LogInfo(summary)
+
+	// Return JSON response
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		p.API.LogError("Failed to encode response", "error", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// SyncEmployees syncs ERPNext employees with Mattermost users
+func (p *Plugin) SyncEmployees(w http.ResponseWriter, r *http.Request) {
+	// Log the start of function for debugging
+	p.API.LogInfo("SyncEmployees function started")
+
+	if p.erpNextClient == nil {
+		p.API.LogError("ERPNext client is not configured")
+		http.Error(w, "ERPNext client is not configured properly. Please check the plugin settings.", http.StatusInternalServerError)
+		return
+	}
+
+	// Check if the custom_chat_id field exists, and create it if it doesn't
+	p.API.LogInfo("Checking if custom_chat_id field exists in ERPNext")
+
+	exists, err := p.erpNextClient.CheckCustomFieldExists("custom_chat_id", "Employee")
+	if err != nil {
+		p.API.LogError("Failed to check if custom_chat_id field exists", "error", err)
+		http.Error(w, fmt.Sprintf("Failed to check if custom_chat_id field exists: %s", err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	if !exists {
+		p.API.LogInfo("Creating custom_chat_id field in ERPNext")
+
+		// Create the custom field
+		err = p.erpNextClient.CreateCustomField(
+			"custom_chat_id",     // Field name
+			"Mattermost User ID", // Label
+			"Employee",           // Document type
+			"Data",               // Field type
+			false,                // Not required
+		)
+
+		if err != nil {
+			p.API.LogError("Failed to create custom_chat_id field", "error", err)
+			http.Error(w, fmt.Sprintf("Failed to create custom_chat_id field: %s", err.Error()), http.StatusInternalServerError)
+			return
+		}
+
+		p.API.LogInfo("Successfully created custom_chat_id field in ERPNext")
+	} else {
+		p.API.LogInfo("custom_chat_id field already exists in ERPNext")
+	}
+
+	// Fetch all employees from ERPNext
+	p.API.LogInfo("Fetching ERPNext employees")
+	employees, err := p.erpNextClient.GetEmployees()
+	if err != nil {
+		p.API.LogError("Failed to fetch employees from ERPNext", "error", err)
+		http.Error(w, fmt.Sprintf("Failed to fetch employees: %s", err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	// Log summary of employees fetched
+	p.API.LogInfo(fmt.Sprintf("Fetched %d employees from ERPNext", len(employees)))
+
+	// Build response data structure
+	type SyncResult struct {
+		MatchedCount int      `json:"matched_count"`
+		UpdatedCount int      `json:"updated_count"`
+		CreatedCount int      `json:"created_count"`
+		SkippedCount int      `json:"skipped_count"`
+		UserResults  []string `json:"user_results"`
+	}
+
+	result := SyncResult{
+		UserResults: []string{},
+	}
+
+	// Process each employee
+	for _, employee := range employees {
+		// Skip if employee has no company email
+		if employee.CompanyEmail == "" {
+			p.API.LogDebug("Skipping employee with no company email", "employee_id", employee.Name)
+			result.SkippedCount++
+			result.UserResults = append(result.UserResults,
+				fmt.Sprintf("%s %s (%s) - Skipped (No Email)", employee.FirstName, employee.LastName, employee.Name))
+			continue
+		}
+
+		// Skip if employee status is not Active
+		if employee.Status != "Active" {
+			p.API.LogDebug("Skipping inactive employee", "employee_id", employee.Name, "status", employee.Status)
+			result.SkippedCount++
+			result.UserResults = append(result.UserResults,
+				fmt.Sprintf("%s %s (%s) - Skipped (Inactive)", employee.FirstName, employee.LastName, employee.Name))
+			continue
+		}
+
+		// Check if this employee already has a Mattermost account mapped
+		if employee.CustomChatID != "" {
+			// Check if the user still exists in Mattermost
+			user, appErr := p.API.GetUser(employee.CustomChatID)
+			if appErr == nil && user != nil && user.DeleteAt == 0 {
+				// User exists and is not deleted
+				result.MatchedCount++
+				result.UserResults = append(result.UserResults,
+					fmt.Sprintf("%s %s (%s) - Already Mapped", employee.FirstName, employee.LastName, employee.CompanyEmail))
+				continue
+			}
+
+			// If we get here, the mapped user doesn't exist or is deleted
+			// We'll try to find a user by email or create a new one
+		}
+
+		// Try to find a Mattermost user with the same email
+		// We need to use a filter to find users by email
+		userSearchOpts := &model.UserSearch{
+			AllowInactive: false,
+			Term:          employee.CompanyEmail, // Use Term to search for the email
+			Limit:         1,
+		}
+
+		userList, appErr := p.API.SearchUsers(userSearchOpts)
+
+		// Found existing user with matching email
+		if appErr == nil && len(userList) > 0 && userList[0].DeleteAt == 0 && userList[0].Email == employee.CompanyEmail {
+			existingUser := userList[0]
+
+			// Update the employee's custom_chat_id in ERPNext
+			updatedEmployee := &erpnext.Employee{
+				Name:         employee.Name,
+				CustomChatID: existingUser.Id,
+			}
+
+			_, err := p.erpNextClient.UpdateEmployee(updatedEmployee)
+			if err != nil {
+				p.API.LogError("Failed to update employee custom_chat_id in ERPNext",
+					"employee_id", employee.Name,
+					"error", err)
+				result.UserResults = append(result.UserResults,
+					fmt.Sprintf("%s %s (%s) - Update Failed: %s", employee.FirstName, employee.LastName, employee.CompanyEmail, err.Error()))
+				continue
+			}
+
+			result.UpdatedCount++
+			result.UserResults = append(result.UserResults,
+				fmt.Sprintf("%s %s (%s) - Mapped to existing user", employee.FirstName, employee.LastName, employee.CompanyEmail))
+		} else {
+			// Need to create a new Mattermost user
+			p.API.LogInfo("Creating new Mattermost user for ERPNext employee",
+				"employee_name", fmt.Sprintf("%s %s", employee.FirstName, employee.LastName),
+				"email", employee.CompanyEmail)
+
+			// Generate username from name (slug of employee name)
+			username := p.GenerateUsername(employee.FirstName, employee.LastName)
+
+			// Generate random password
+			password := p.GenerateRandomPassword(12)
+
+			// Create new user
+			newUser := &model.User{
+				Email:         employee.CompanyEmail,
+				Username:      username,
+				Password:      password,
+				EmailVerified: true,
+				FirstName:     employee.FirstName,
+				LastName:      employee.LastName,
+			}
+
+			createdUser, appErr := p.API.CreateUser(newUser)
+			if appErr != nil {
+				p.API.LogError("Failed to create Mattermost user",
+					"email", employee.CompanyEmail,
+					"error", appErr.Error())
+				result.UserResults = append(result.UserResults,
+					fmt.Sprintf("%s %s (%s) - User Creation Failed: %s", employee.FirstName, employee.LastName, employee.CompanyEmail, appErr.Error()))
+				continue
+			}
+
+			// Update the employee's custom_chat_id in ERPNext
+			updatedEmployee := &erpnext.Employee{
+				Name:         employee.Name,
+				CustomChatID: createdUser.Id,
+			}
+
+			_, err := p.erpNextClient.UpdateEmployee(updatedEmployee)
+			if err != nil {
+				p.API.LogError("Failed to update employee custom_chat_id in ERPNext after user creation",
+					"employee_id", employee.Name,
+					"error", err)
+				result.UserResults = append(result.UserResults,
+					fmt.Sprintf("%s %s (%s) - User Created but Update Failed: %s", employee.FirstName, employee.LastName, employee.CompanyEmail, err.Error()))
+				continue
+			}
+
+			// Attempt to send email notification with credentials
+			emailSuccess := p.SendCredentialEmail(employee.CompanyEmail, username, password)
+
+			// Add credentials to result details with email status
+			emailStatus := ""
+			if emailSuccess {
+				emailStatus = " (Email sent)"
+			} else {
+				emailStatus = " (Email delivery attempted)"
+			}
+
+			result.CreatedCount++
+			result.UserResults = append(result.UserResults,
+				fmt.Sprintf("%s %s (%s) - New User Created%s\nUsername: %s\nPassword: %s",
+					employee.FirstName, employee.LastName, employee.CompanyEmail,
+					emailStatus, username, password))
 		}
 	}
 
