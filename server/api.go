@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/gorilla/mux"
 	"github.com/mattermost/mattermost-plugin-starter-template/server/erpnext"
@@ -375,20 +376,40 @@ func (p *Plugin) SyncEmployees(w http.ResponseWriter, r *http.Request) {
 			// We'll try to find a user by email or create a new one
 		}
 
-		// Try to find a Mattermost user with the same email
-		// We need to use a filter to find users by email
-		userSearchOpts := &model.UserSearch{
-			AllowInactive: false,
-			Term:          employee.CompanyEmail, // Use Term to search for the email
-			Limit:         1,
+		// Try multiple approaches to find a Mattermost user with the same email
+		var existingUser *model.User = nil
+		var appErr *model.AppError = nil
+
+		// First try: use GetUserByEmail which is most reliable for exact email matching
+		existingUser, appErr = p.API.GetUserByEmail(employee.CompanyEmail)
+
+		// If direct email lookup failed, try search as a fallback
+		if appErr != nil || existingUser == nil {
+			p.API.LogDebug("Direct email lookup failed, trying search", "email", employee.CompanyEmail, "error", appErr)
+
+			// Try searching with broader criteria
+			userSearchOpts := &model.UserSearch{
+				AllowInactive: false,
+				Term:          employee.CompanyEmail,
+				Limit:         10, // Increased limit to catch more potential matches
+			}
+
+			userList, searchErr := p.API.SearchUsers(userSearchOpts)
+
+			if searchErr == nil && len(userList) > 0 {
+				// Look for exact email match in search results
+				for _, user := range userList {
+					if strings.EqualFold(user.Email, employee.CompanyEmail) && user.DeleteAt == 0 {
+						existingUser = user
+						p.API.LogInfo("Found user by search", "user_id", user.Id, "email", user.Email)
+						break
+					}
+				}
+			}
 		}
 
-		userList, appErr := p.API.SearchUsers(userSearchOpts)
-
 		// Found existing user with matching email
-		if appErr == nil && len(userList) > 0 && userList[0].DeleteAt == 0 && userList[0].Email == employee.CompanyEmail {
-			existingUser := userList[0]
-
+		if existingUser != nil && existingUser.DeleteAt == 0 {
 			// Update the employee's custom_chat_id in ERPNext
 			updatedEmployee := &erpnext.Employee{
 				Name:         employee.Name,
