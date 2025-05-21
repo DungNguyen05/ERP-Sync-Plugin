@@ -22,6 +22,27 @@ type Client struct {
 	HTTPClient *http.Client
 }
 
+type CustomFieldResponse struct {
+	Data []CustomField `json:"data"`
+}
+
+// CustomField represents a custom field in ERPNext
+type CustomField struct {
+	Name              string `json:"name"`
+	FieldName         string `json:"fieldname"`
+	Label             string `json:"label"`
+	DocType           string `json:"dt"`
+	FieldType         string `json:"fieldtype"`
+	Mandatory         int    `json:"reqd"`
+	Translatable      int    `json:"translatable"`
+	Unique            int    `json:"unique"`
+	NoQuickEntry      int    `json:"no_copy"`
+	AllowInQuickEntry int    `json:"allow_in_quick_entry"`
+	ReadOnly          int    `json:"read_only"`
+	HideDisplay       int    `json:"hide_display"`
+	Bold              int    `json:"bold"`
+}
+
 // Employee represents an employee in ERPNext
 type Employee struct {
 	Name          string `json:"name,omitempty"` // This is the employee ID
@@ -281,4 +302,134 @@ func (c *Client) UpdateEmployee(employee *Employee) (*Employee, error) {
 	// In many cases, it just returns a success message without the full record
 	// We'll just return the original employee object since we don't need the response data
 	return employee, nil
+}
+
+// CheckCustomFieldExists checks if a custom field exists for a specific DocType
+func (c *Client) CheckCustomFieldExists(fieldName, docType string) (bool, error) {
+	// Build URL with filters for the custom field
+	baseURL := fmt.Sprintf("%s/api/resource/Custom Field", c.URL)
+	reqURL, err := url.Parse(baseURL)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to parse URL")
+	}
+
+	// Create the filter to find the exact field by name and document type
+	filterParam := fmt.Sprintf(`[["fieldname","=","%s"],["dt","=","%s"]]`, fieldName, docType)
+
+	// Add query parameters
+	query := reqURL.Query()
+	query.Add("filters", filterParam)
+	reqURL.RawQuery = query.Encode()
+
+	// Create the request
+	req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to create request")
+	}
+
+	// Set authorization header
+	authToken := fmt.Sprintf("token %s:%s", c.APIKey, c.APISecret)
+	req.Header.Set("Authorization", authToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	// Execute the request
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to execute request")
+	}
+	defer resp.Body.Close()
+
+	// Read the response body
+	body, _ := io.ReadAll(resp.Body)
+
+	// Print response for debugging
+	fmt.Printf("Custom field check response status: %d\n", resp.StatusCode)
+	fmt.Printf("Custom field check response body: %s\n", string(body))
+
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("ERPNext API returned non-OK status code %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse the response
+	var customFieldResp CustomFieldResponse
+	if err := json.Unmarshal(body, &customFieldResp); err != nil {
+		return false, errors.Wrap(err, "failed to decode response: "+string(body))
+	}
+
+	// Field exists if we found at least one result
+	return len(customFieldResp.Data) > 0, nil
+}
+
+// CreateCustomField creates a new custom field in ERPNext
+func (c *Client) CreateCustomField(fieldName, label, docType, fieldType string, required bool) error {
+	url := fmt.Sprintf("%s/api/resource/Custom Field", c.URL)
+
+	// Convert boolean to integer (0 or 1)
+	reqd := 0
+	if required {
+		reqd = 1
+	}
+
+	// The ERPNext API expects data in a specific format
+	requestBody := map[string]interface{}{
+		"doctype":              "Custom Field",
+		"dt":                   docType,         // Document Type (e.g., "Employee")
+		"fieldname":            fieldName,       // Field name (e.g., "custom_chat_id")
+		"label":                label,           // Label (e.g., "Mattermost User ID")
+		"fieldtype":            fieldType,       // Field type (e.g., "Data")
+		"insert_after":         "employee_name", // Insert after employee name for visibility
+		"reqd":                 reqd,            // Is it required? (0 for not mandatory)
+		"in_list_view":         0,               // Show in list view (1 for yes) - THIS IS THE KEY SETTING
+		"in_standard_filter":   1,               // Include in standard filters
+		"in_global_search":     1,               // Include in global search
+		"allow_in_quick_entry": 1,               // Allow in quick entry
+		"translatable":         0,               // Is it translatable? (0 or 1)
+		"unique":               0,               // Is it unique? (0 or 1)
+		"no_copy":              0,               // Exclude from copying? (0 or 1)
+		"read_only":            0,               // Is it read-only? (0 or 1)
+		"hide_display":         0,               // Hide in grid view? (0 or 1)
+	}
+
+	// Convert to JSON
+	bodyData, err := json.Marshal(requestBody)
+	if err != nil {
+		return errors.Wrap(err, "failed to marshal custom field data")
+	}
+
+	// Print the request body for debugging
+	fmt.Printf("Create custom field request body: %s\n", string(bodyData))
+
+	// Create request
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(bodyData))
+	if err != nil {
+		return errors.Wrap(err, "failed to create request")
+	}
+
+	// Set headers
+	authToken := fmt.Sprintf("token %s:%s", c.APIKey, c.APISecret)
+	req.Header.Set("Authorization", authToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	// Execute request
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return errors.Wrap(err, "failed to execute request")
+	}
+	defer resp.Body.Close()
+
+	// Read response body for logging and error handling
+	body, _ := io.ReadAll(resp.Body)
+
+	// Log the response for debugging
+	fmt.Printf("Create custom field response status: %d\n", resp.StatusCode)
+	fmt.Printf("Create custom field response body: %s\n", string(body))
+
+	// Handle response
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return fmt.Errorf("ERPNext API returned status code %d when creating custom field: %s",
+			resp.StatusCode, string(body))
+	}
+
+	return nil
 }

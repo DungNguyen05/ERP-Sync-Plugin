@@ -163,6 +163,44 @@ func (h *Handler) executeMapUsersCommand(args *model.CommandArgs) *model.Command
 		}
 	}
 
+	// First, check if the custom_chat_id field exists, and create it if it doesn't
+	h.client.Log.Info("Checking if custom_chat_id field exists in ERPNext")
+
+	exists, err := h.erpNextClient.CheckCustomFieldExists("custom_chat_id", "Employee")
+	if err != nil {
+		h.client.Log.Error("Failed to check if custom_chat_id field exists", "error", err)
+		return &model.CommandResponse{
+			ResponseType: model.CommandResponseTypeInChannel,
+			Text:         fmt.Sprintf("Failed to check if custom_chat_id field exists: %s", err.Error()),
+		}
+	}
+
+	if !exists {
+		h.client.Log.Info("Creating custom_chat_id field in ERPNext")
+
+		// Create the custom field
+		err = h.erpNextClient.CreateCustomField(
+			"custom_chat_id",     // Field name
+			"Mattermost User ID", // Label
+			"Employee",           // Document type
+			"Data",               // Field type
+			false,                // Not required
+		)
+
+		if err != nil {
+			h.client.Log.Error("Failed to create custom_chat_id field", "error", err)
+			return &model.CommandResponse{
+				ResponseType: model.CommandResponseTypeInChannel,
+				Text:         fmt.Sprintf("Failed to create custom_chat_id field: %s", err.Error()),
+			}
+		}
+
+		h.client.Log.Info("Successfully created custom_chat_id field in ERPNext")
+	} else {
+		h.client.Log.Info("custom_chat_id field already exists in ERPNext")
+	}
+
+	// Continue with the existing code to fetch and process users
 	h.client.Log.Info("Fetching Mattermost users")
 
 	// Fetch all users from Mattermost
