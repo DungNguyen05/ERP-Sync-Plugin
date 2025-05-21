@@ -1,14 +1,11 @@
 package main
 
 import (
-	"net/http"
 	"sync"
 	"time"
 
-	"github.com/mattermost/mattermost-plugin-starter-template/server/command"
 	"github.com/mattermost/mattermost-plugin-starter-template/server/erpnext"
 	"github.com/mattermost/mattermost-plugin-starter-template/server/store/kvstore"
-	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/mattermost/mattermost/server/public/plugin"
 	"github.com/mattermost/mattermost/server/public/pluginapi"
 	"github.com/mattermost/mattermost/server/public/pluginapi/cluster"
@@ -24,9 +21,6 @@ type Plugin struct {
 
 	// client is the Mattermost server API client.
 	client *pluginapi.Client
-
-	// commandClient is the client used to register and execute slash commands.
-	commandClient command.Command
 
 	// erpNextClient is the client used to interact with ERPNext API.
 	erpNextClient *erpnext.Client
@@ -49,9 +43,6 @@ func (p *Plugin) OnActivate() error {
 	// Initialize the KV store client
 	p.kvstore = kvstore.NewKVStore(p.client)
 
-	// Initialize the command handler
-	p.commandClient = command.NewCommandHandler(p.client)
-
 	// Initialize the ERPNext client based on configuration
 	config := p.getConfiguration()
 	if config.ERPNextURL != "" && config.ERPNextAPIKey != "" && config.ERPNextAPISecret != "" {
@@ -60,9 +51,6 @@ func (p *Plugin) OnActivate() error {
 			config.ERPNextAPIKey,
 			config.ERPNextAPISecret,
 		)
-
-		// Set the ERPNext client in the command handler
-		p.commandClient.SetERPNextClient(p.erpNextClient)
 	} else {
 		p.API.LogInfo("ERPNext client not initialized: configuration missing. This is expected on first startup.")
 	}
@@ -101,17 +89,9 @@ func (p *Plugin) OnConfigurationChange() error {
 			configuration.ERPNextAPIKey,
 			configuration.ERPNextAPISecret,
 		)
-
-		// Set the ERPNext client in the command handler
-		if p.commandClient != nil {
-			p.commandClient.SetERPNextClient(p.erpNextClient)
-		}
 	} else {
 		p.API.LogInfo("ERPNext client not initialized: configuration missing")
 		p.erpNextClient = nil
-		if p.commandClient != nil {
-			p.commandClient.SetERPNextClient(nil)
-		}
 	}
 
 	return nil
@@ -125,13 +105,4 @@ func (p *Plugin) OnDeactivate() error {
 		}
 	}
 	return nil
-}
-
-// ExecuteCommand executes slash commands registered by this plugin.
-func (p *Plugin) ExecuteCommand(c *plugin.Context, args *model.CommandArgs) (*model.CommandResponse, *model.AppError) {
-	response, err := p.commandClient.Handle(args)
-	if err != nil {
-		return nil, model.NewAppError("ExecuteCommand", "plugin.command.execute_command.app_error", nil, err.Error(), http.StatusInternalServerError)
-	}
-	return response, nil
 }

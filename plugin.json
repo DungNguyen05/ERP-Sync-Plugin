@@ -43,6 +43,12 @@
                 "type": "text",
                 "help_text": "The API secret for your ERPNext instance",
                 "placeholder": "Enter your API secret"
+            },
+            {
+                "key": "SyncUsers",
+                "display_name": "Sync Users",
+                "type": "custom",
+                "help_text": "Click to sync Mattermost users with ERPNext employees"
             }
         ]
     }
