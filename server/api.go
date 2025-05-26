@@ -97,11 +97,11 @@ func (p *Plugin) SyncUsers(w http.ResponseWriter, r *http.Request) {
 
 		// Create the custom field
 		err = p.erpNextClient.CreateCustomField(
-			"custom_chat_id",     // Field name
-			"Mattermost User ID", // Label
-			"Employee",           // Document type
-			"Data",               // Field type
-			false,                // Not required
+			"custom_chat_id",   // Field name
+			"Workdone User ID", // Label
+			"Employee",         // Document type
+			"Data",             // Field type
+			false,              // Not required
 		)
 
 		if err != nil {
@@ -392,11 +392,11 @@ func (p *Plugin) SyncEmployees(w http.ResponseWriter, r *http.Request) {
 
 		// Create the custom field
 		err = p.erpNextClient.CreateCustomField(
-			"custom_chat_id",     // Field name
-			"Mattermost User ID", // Label
-			"Employee",           // Document type
-			"Data",               // Field type
-			false,                // Not required
+			"custom_chat_id",   // Field name
+			"Workdone User ID", // Label
+			"Employee",         // Document type
+			"Data",             // Field type
+			false,              // Not required
 		)
 
 		if err != nil {

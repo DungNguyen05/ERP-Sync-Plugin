@@ -435,7 +435,7 @@ func (c *Client) CreateCustomField(fieldName, label, docType, fieldType string, 
 		"doctype":              "Custom Field",
 		"dt":                   docType,         // Document Type (e.g., "Employee")
 		"fieldname":            fieldName,       // Field name (e.g., "custom_chat_id")
-		"label":                label,           // Label (e.g., "Mattermost User ID")
+		"label":                label,           // Label (e.g., "Workdone User ID")
 		"fieldtype":            fieldType,       // Field type (e.g., "Data")
 		"insert_after":         "employee_name", // Insert after employee name for visibility
 		"reqd":                 reqd,            // Is it required? (0 for not mandatory)
@@ -547,11 +547,29 @@ func (c *Client) CreateRoleProfile(roleProfileName string) error {
 	requestBody := map[string]interface{}{
 		"doctype":      "Role Profile",
 		"role_profile": roleProfileName,
-		// Add basic roles that most users need
+		// Add comprehensive roles for full permissions
 		"roles": []map[string]interface{}{
-			{
-				"role": "Employee Self Service",
-			},
+			{"role": "System Manager"},
+			{"role": "Administrator"},
+			{"role": "Employee"},
+			{"role": "Employee Self Service"},
+			{"role": "HR Manager"},
+			{"role": "HR User"},
+			{"role": "Accounts Manager"},
+			{"role": "Accounts User"},
+			{"role": "Sales Manager"},
+			{"role": "Sales User"},
+			{"role": "Purchase Manager"},
+			{"role": "Purchase User"},
+			{"role": "Stock Manager"},
+			{"role": "Stock User"},
+			{"role": "Manufacturing Manager"},
+			{"role": "Manufacturing User"},
+			{"role": "Projects Manager"},
+			{"role": "Projects User"},
+			{"role": "Website Manager"},
+			{"role": "Desk User"},
+			{"role": "All"},
 		},
 	}
 
