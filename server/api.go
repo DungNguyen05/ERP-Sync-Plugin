@@ -71,7 +71,7 @@ func (p *Plugin) HelloWorld(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// SyncUsers syncs Mattermost users with ERPNext employees
+// SyncUsers syncs Mattermost users with ERPNext employees and creates ERPNext users
 func (p *Plugin) SyncUsers(w http.ResponseWriter, r *http.Request) {
 	// Log the start of function for debugging
 	p.API.LogInfo("SyncUsers function started")
@@ -115,6 +115,31 @@ func (p *Plugin) SyncUsers(w http.ResponseWriter, r *http.Request) {
 		p.API.LogInfo("custom_chat_id field already exists in ERPNext")
 	}
 
+	// Check if the "Mặc định" role profile exists, and create it if it doesn't
+	p.API.LogInfo("Checking if 'Mặc định' role profile exists in ERPNext")
+
+	roleProfileExists, err := p.erpNextClient.CheckRoleProfileExists("Mặc định")
+	if err != nil {
+		p.API.LogError("Failed to check if 'Mặc định' role profile exists", "error", err)
+		http.Error(w, fmt.Sprintf("Failed to check if 'Mặc định' role profile exists: %s", err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	if !roleProfileExists {
+		p.API.LogInfo("Creating 'Mặc định' role profile in ERPNext")
+
+		err = p.erpNextClient.CreateRoleProfile("Mặc định")
+		if err != nil {
+			p.API.LogError("Failed to create 'Mặc định' role profile", "error", err)
+			http.Error(w, fmt.Sprintf("Failed to create 'Mặc định' role profile: %s", err.Error()), http.StatusInternalServerError)
+			return
+		}
+
+		p.API.LogInfo("Successfully created 'Mặc định' role profile in ERPNext")
+	} else {
+		p.API.LogInfo("'Mặc định' role profile already exists in ERPNext")
+	}
+
 	// Fetch all users from Mattermost
 	p.API.LogInfo("Fetching Mattermost users")
 
@@ -135,11 +160,13 @@ func (p *Plugin) SyncUsers(w http.ResponseWriter, r *http.Request) {
 
 	// Build response data
 	type SyncResult struct {
-		MatchedCount int      `json:"matched_count"`
-		UpdatedCount int      `json:"updated_count"`
-		CreatedCount int      `json:"created_count"`
-		SkippedCount int      `json:"skipped_count"`
-		UserResults  []string `json:"user_results"`
+		MatchedCount    int      `json:"matched_count"`
+		UpdatedCount    int      `json:"updated_count"`
+		CreatedCount    int      `json:"created_count"`
+		SkippedCount    int      `json:"skipped_count"`
+		ERPUsersCreated int      `json:"erp_users_created"`
+		ERPUsersAlready int      `json:"erp_users_already_exist"`
+		UserResults     []string `json:"user_results"`
 	}
 
 	result := SyncResult{
@@ -186,6 +213,8 @@ func (p *Plugin) SyncUsers(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		var isNewEmployee bool = false
+
 		if employee != nil {
 			// Employee found - check if we need to update the custom_chat_id
 			if employee.CustomChatID != user.Id {
@@ -213,13 +242,9 @@ func (p *Plugin) SyncUsers(w http.ResponseWriter, r *http.Request) {
 				}
 
 				result.UpdatedCount++
-				result.UserResults = append(result.UserResults,
-					fmt.Sprintf("%s (%s) - Updated", user.Username, user.Email))
 			} else {
 				// Already mapped correctly
 				result.MatchedCount++
-				result.UserResults = append(result.UserResults,
-					fmt.Sprintf("%s (%s) - Already Mapped", user.Username, user.Email))
 			}
 		} else {
 			// Employee not found - create a new one
@@ -251,15 +276,85 @@ func (p *Plugin) SyncUsers(w http.ResponseWriter, r *http.Request) {
 			}
 
 			result.CreatedCount++
-			result.UserResults = append(result.UserResults,
-				fmt.Sprintf("%s (%s) - Created", user.Username, user.Email))
+			isNewEmployee = true
+		}
+
+		// Now check if ERPNext user exists for this employee
+		p.API.LogInfo("Checking if ERPNext user exists for employee", "email", user.Email)
+
+		erpUser, err := p.erpNextClient.GetUserByEmail(user.Email)
+		if err != nil {
+			p.API.LogError("Error checking ERPNext user by email", "email", user.Email, "error", err)
+			// Continue with the next user instead of failing completely
+			if isNewEmployee {
+				result.UserResults = append(result.UserResults,
+					fmt.Sprintf("%s (%s) - Employee Created, User Check Failed: %s", user.Username, user.Email, err.Error()))
+			} else {
+				result.UserResults = append(result.UserResults,
+					fmt.Sprintf("%s (%s) - Employee Updated, User Check Failed: %s", user.Username, user.Email, err.Error()))
+			}
+			continue
+		}
+
+		if erpUser != nil {
+			// ERPNext user already exists
+			result.ERPUsersAlready++
+			if isNewEmployee {
+				result.UserResults = append(result.UserResults,
+					fmt.Sprintf("%s (%s) - Employee Created, ERPNext User Already Exists", user.Username, user.Email))
+			} else {
+				result.UserResults = append(result.UserResults,
+					fmt.Sprintf("%s (%s) - Already Mapped, ERPNext User Exists", user.Username, user.Email))
+			}
+		} else {
+			// Need to create ERPNext user
+			p.API.LogInfo("Creating ERPNext user for employee", "email", user.Email)
+
+			// Generate username from email (take part before @)
+			emailParts := strings.Split(user.Email, "@")
+			username := emailParts[0]
+			if len(username) == 0 {
+				username = fmt.Sprintf("user_%s", user.Id[:8]) // Fallback to partial Mattermost ID
+			}
+
+			newERPUser := &erpnext.User{
+				Email:            user.Email,
+				FirstName:        user.FirstName,
+				LastName:         user.LastName,
+				Username:         username,
+				Enabled:          1, // 1 for enabled
+				RoleProfileName:  "Mặc định",
+				SendWelcomeEmail: 1, // Send welcome email
+			}
+
+			_, err := p.erpNextClient.CreateUser(newERPUser)
+			if err != nil {
+				p.API.LogError("Failed to create ERPNext user", "email", user.Email, "error", err)
+				if isNewEmployee {
+					result.UserResults = append(result.UserResults,
+						fmt.Sprintf("%s (%s) - Employee Created, ERPNext User Creation Failed: %s", user.Username, user.Email, err.Error()))
+				} else {
+					result.UserResults = append(result.UserResults,
+						fmt.Sprintf("%s (%s) - Employee Updated, ERPNext User Creation Failed: %s", user.Username, user.Email, err.Error()))
+				}
+				continue
+			}
+
+			result.ERPUsersCreated++
+			if isNewEmployee {
+				result.UserResults = append(result.UserResults,
+					fmt.Sprintf("%s (%s) - Employee & ERPNext User Created", user.Username, user.Email))
+			} else {
+				result.UserResults = append(result.UserResults,
+					fmt.Sprintf("%s (%s) - Employee Updated, ERPNext User Created", user.Username, user.Email))
+			}
 		}
 	}
 
 	// Create response summary
 	summary := fmt.Sprintf(
-		"Sync completed. Matched: %d, Updated: %d, Created: %d, Skipped: %d",
-		result.MatchedCount, result.UpdatedCount, result.CreatedCount, result.SkippedCount,
+		"Sync completed. Matched: %d, Updated: %d, Created: %d, Skipped: %d, ERPNext Users Created: %d, ERPNext Users Already Exist: %d",
+		result.MatchedCount, result.UpdatedCount, result.CreatedCount, result.SkippedCount, result.ERPUsersCreated, result.ERPUsersAlready,
 	)
 	p.API.LogInfo(summary)
 

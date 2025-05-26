@@ -61,6 +61,34 @@ type EmployeeResponse struct {
 	Data []Employee `json:"data"`
 }
 
+// RoleProfile represents a role profile in ERPNext
+type RoleProfile struct {
+	Name            string `json:"name,omitempty"`
+	RoleProfileName string `json:"role_profile,omitempty"`
+}
+
+// RoleProfileResponse represents the response from ERPNext API when fetching role profiles
+type RoleProfileResponse struct {
+	Data []RoleProfile `json:"data"`
+}
+
+// User represents a user in ERPNext
+type User struct {
+	Name             string `json:"name,omitempty"` // This is the user ID
+	Email            string `json:"email,omitempty"`
+	FirstName        string `json:"first_name,omitempty"`
+	LastName         string `json:"last_name,omitempty"`
+	Username         string `json:"username,omitempty"`
+	Enabled          int    `json:"enabled,omitempty"` // 1 for enabled, 0 for disabled
+	RoleProfileName  string `json:"role_profile_name,omitempty"`
+	SendWelcomeEmail int    `json:"send_welcome_email,omitempty"`
+}
+
+// UserResponse represents the response from ERPNext API when fetching users
+type UserResponse struct {
+	Data []User `json:"data"`
+}
+
 // NewClient creates a new ERPNext client
 func NewClient(url, apiKey, apiSecret string) *Client {
 	return &Client{
@@ -464,4 +492,213 @@ func (c *Client) CreateCustomField(fieldName, label, docType, fieldType string, 
 	}
 
 	return nil
+}
+
+// CheckRoleProfileExists checks if a role profile exists
+func (c *Client) CheckRoleProfileExists(roleProfileName string) (bool, error) {
+	baseURL := fmt.Sprintf("%s/api/resource/Role Profile", c.URL)
+	reqURL, err := url.Parse(baseURL)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to parse URL")
+	}
+
+	// Create filter to find role profile by name
+	filterParam := fmt.Sprintf(`[["role_profile","=","%s"]]`, roleProfileName)
+
+	query := reqURL.Query()
+	query.Add("filters", filterParam)
+	reqURL.RawQuery = query.Encode()
+
+	req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to create request")
+	}
+
+	authToken := fmt.Sprintf("token %s:%s", c.APIKey, c.APISecret)
+	req.Header.Set("Authorization", authToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return false, errors.Wrap(err, "failed to execute request")
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	fmt.Printf("Role profile check response status: %d\n", resp.StatusCode)
+	fmt.Printf("Role profile check response body: %s\n", string(body))
+
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("ERPNext API returned non-OK status code %d: %s", resp.StatusCode, string(body))
+	}
+
+	var roleProfileResp RoleProfileResponse
+	if err := json.Unmarshal(body, &roleProfileResp); err != nil {
+		return false, errors.Wrap(err, "failed to decode response: "+string(body))
+	}
+
+	return len(roleProfileResp.Data) > 0, nil
+}
+
+// CreateRoleProfile creates a new role profile
+func (c *Client) CreateRoleProfile(roleProfileName string) error {
+	url := fmt.Sprintf("%s/api/resource/Role Profile", c.URL)
+
+	requestBody := map[string]interface{}{
+		"doctype":      "Role Profile",
+		"role_profile": roleProfileName,
+		// Add basic roles that most users need
+		"roles": []map[string]interface{}{
+			{
+				"role": "Employee Self Service",
+			},
+		},
+	}
+
+	bodyData, err := json.Marshal(requestBody)
+	if err != nil {
+		return errors.Wrap(err, "failed to marshal role profile data")
+	}
+
+	fmt.Printf("Create role profile request body: %s\n", string(bodyData))
+
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(bodyData))
+	if err != nil {
+		return errors.Wrap(err, "failed to create request")
+	}
+
+	authToken := fmt.Sprintf("token %s:%s", c.APIKey, c.APISecret)
+	req.Header.Set("Authorization", authToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return errors.Wrap(err, "failed to execute request")
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	fmt.Printf("Create role profile response status: %d\n", resp.StatusCode)
+	fmt.Printf("Create role profile response body: %s\n", string(body))
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return fmt.Errorf("ERPNext API returned status code %d when creating role profile: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+// GetUserByEmail finds a user by email
+func (c *Client) GetUserByEmail(email string) (*User, error) {
+	baseURL := fmt.Sprintf("%s/api/resource/User", c.URL)
+	reqURL, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to parse URL")
+	}
+
+	filterParam := fmt.Sprintf(`[["email","=","%s"]]`, email)
+
+	query := reqURL.Query()
+	query.Add("filters", filterParam)
+	reqURL.RawQuery = query.Encode()
+
+	fmt.Printf("Making user request to: %s\n", reqURL.String())
+
+	req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create request")
+	}
+
+	authToken := fmt.Sprintf("token %s:%s", c.APIKey, c.APISecret)
+	req.Header.Set("Authorization", authToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to execute request")
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	fmt.Printf("User response status: %d\n", resp.StatusCode)
+	fmt.Printf("User response body: %s\n", string(body))
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ERPNext API returned non-OK status code %d: %s", resp.StatusCode, string(body))
+	}
+
+	var userResp UserResponse
+	if err := json.Unmarshal(body, &userResp); err != nil {
+		return nil, errors.Wrap(err, "failed to decode response: "+string(body))
+	}
+
+	fmt.Printf("Found %d users with email %s\n", len(userResp.Data), email)
+
+	if len(userResp.Data) == 0 {
+		return nil, nil
+	}
+
+	return &userResp.Data[0], nil
+}
+
+// CreateUser creates a new user in ERPNext
+func (c *Client) CreateUser(user *User) (*User, error) {
+	url := fmt.Sprintf("%s/api/resource/User", c.URL)
+
+	requestBody := map[string]interface{}{
+		"doctype":            "User",
+		"email":              user.Email,
+		"first_name":         user.FirstName,
+		"last_name":          user.LastName,
+		"username":           user.Username,
+		"enabled":            user.Enabled,
+		"role_profile_name":  user.RoleProfileName,
+		"send_welcome_email": user.SendWelcomeEmail,
+	}
+
+	bodyData, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to marshal user data")
+	}
+
+	fmt.Printf("Create user request body: %s\n", string(bodyData))
+
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(bodyData))
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to create request")
+	}
+
+	authToken := fmt.Sprintf("token %s:%s", c.APIKey, c.APISecret)
+	req.Header.Set("Authorization", authToken)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to execute request")
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	fmt.Printf("Create user response status: %d\n", resp.StatusCode)
+	fmt.Printf("Create user response body: %s\n", string(body))
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return nil, fmt.Errorf("ERPNext API returned status code %d when creating user: %s", resp.StatusCode, string(body))
+	}
+
+	var respData struct {
+		Data struct {
+			Name string `json:"name"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &respData); err != nil {
+		return nil, errors.Wrap(err, "failed to decode response: "+string(body))
+	}
+
+	return &User{
+		Name: respData.Data.Name,
+	}, nil
 }
