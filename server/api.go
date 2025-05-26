@@ -324,7 +324,7 @@ func (p *Plugin) SyncUsers(w http.ResponseWriter, r *http.Request) {
 				Username:         username,
 				Enabled:          1, // 1 for enabled
 				RoleProfileName:  "Mặc định",
-				SendWelcomeEmail: 1, // Send welcome email
+				SendWelcomeEmail: 0, // Send welcome email
 			}
 
 			_, err := p.erpNextClient.CreateUser(newERPUser)
