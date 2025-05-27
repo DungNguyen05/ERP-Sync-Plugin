@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/mattermost/mattermost-plugin-starter-template/server/erpnext"
@@ -76,6 +77,10 @@ func (p *Plugin) SyncUsers(w http.ResponseWriter, r *http.Request) {
 	// Log the start of function for debugging
 	p.API.LogInfo("SyncUsers function started")
 
+	// Add timeout protection for large syncs
+	startTime := time.Now()
+	maxDuration := 15 * time.Minute // Increased timeout for large syncs
+
 	if p.erpNextClient == nil {
 		p.API.LogError("ERPNext client is not configured")
 		http.Error(w, "ERPNext client is not configured properly. Please check the plugin settings.", http.StatusInternalServerError)
@@ -140,23 +145,50 @@ func (p *Plugin) SyncUsers(w http.ResponseWriter, r *http.Request) {
 		p.API.LogInfo("'Mặc định' role profile already exists in ERPNext")
 	}
 
-	// Fetch all users from Mattermost
-	p.API.LogInfo("Fetching Mattermost users")
+	// Fetch all users from Mattermost with pagination
+	p.API.LogInfo("Fetching Mattermost users with pagination")
 
 	perPage := 200
-	users, appErr := p.API.GetUsers(&model.UserGetOptions{
-		Page:    0,
-		PerPage: perPage,
-		Active:  true, // Only fetch active (non-deleted) users
-	})
-	if appErr != nil {
-		p.API.LogError("Failed to fetch users from Mattermost", "error", appErr.Error())
-		http.Error(w, fmt.Sprintf("Failed to fetch users: %s", appErr.Error()), http.StatusInternalServerError)
-		return
+	var allUsers []*model.User
+	page := 0
+
+	// Fetch all users with pagination
+	for {
+		users, appErr := p.API.GetUsers(&model.UserGetOptions{
+			Page:    page,
+			PerPage: perPage,
+			Active:  true, // Only fetch active (non-deleted) users
+		})
+		if appErr != nil {
+			p.API.LogError("Failed to fetch users from Mattermost", "error", appErr.Error(), "page", page)
+			http.Error(w, fmt.Sprintf("Failed to fetch users: %s", appErr.Error()), http.StatusInternalServerError)
+			return
+		}
+
+		// Add users to our collection
+		allUsers = append(allUsers, users...)
+
+		p.API.LogInfo(fmt.Sprintf("Fetched page %d: %d users (total so far: %d)", page+1, len(users), len(allUsers)))
+
+		// If we got fewer users than the page size, we've reached the end
+		if len(users) < perPage {
+			break
+		}
+
+		page++
+
+		// Safety check to prevent infinite loops (allows up to 2000 users)
+		if page > 15 { // Increased limit: 15 pages * 200 per page = 3000 users max
+			p.API.LogWarn("Reached maximum page limit during user sync", "pages_fetched", page)
+			break
+		}
 	}
 
+	// Use allUsers for the rest of the function
+	users := allUsers
+
 	// Log summary of users fetched
-	p.API.LogInfo(fmt.Sprintf("Fetched %d users from Mattermost", len(users)))
+	p.API.LogInfo(fmt.Sprintf("Fetched %d total users from Mattermost across %d pages", len(users), page+1))
 
 	// Build response data
 	type SyncResult struct {
@@ -167,6 +199,8 @@ func (p *Plugin) SyncUsers(w http.ResponseWriter, r *http.Request) {
 		ERPUsersCreated int      `json:"erp_users_created"`
 		ERPUsersAlready int      `json:"erp_users_already_exist"`
 		UserResults     []string `json:"user_results"`
+		TotalProcessed  int      `json:"total_processed"`
+		TimedOut        bool     `json:"timed_out"`
 	}
 
 	result := SyncResult{
@@ -174,7 +208,22 @@ func (p *Plugin) SyncUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Process each user
-	for _, user := range users {
+	for i, user := range users {
+		// Check for timeout
+		if time.Since(startTime) > maxDuration {
+			p.API.LogWarn("Sync operation reached maximum duration, stopping", "processed_users", i)
+			result.UserResults = append(result.UserResults,
+				fmt.Sprintf("TIMEOUT: Sync stopped after processing %d users due to timeout", i))
+			result.TimedOut = true
+			break
+		}
+
+		// Progress logging for large syncs
+		if i > 0 && i%50 == 0 {
+			p.API.LogInfo(fmt.Sprintf("Sync progress: processed %d/%d users (%.1f%%)",
+				i, len(users), float64(i)/float64(len(users))*100))
+		}
+
 		// Skip if user has no email
 		if user.Email == "" {
 			p.API.LogDebug("Skipping user with no email", "username", user.Username)
@@ -351,10 +400,13 @@ func (p *Plugin) SyncUsers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Set total processed count
+	result.TotalProcessed = result.MatchedCount + result.UpdatedCount + result.CreatedCount + result.SkippedCount
+
 	// Create response summary
 	summary := fmt.Sprintf(
-		"Sync completed. Matched: %d, Updated: %d, Created: %d, Skipped: %d, ERPNext Users Created: %d, ERPNext Users Already Exist: %d",
-		result.MatchedCount, result.UpdatedCount, result.CreatedCount, result.SkippedCount, result.ERPUsersCreated, result.ERPUsersAlready,
+		"Sync completed. Total Processed: %d, Matched: %d, Updated: %d, Created: %d, Skipped: %d, ERPNext Users Created: %d, ERPNext Users Already Exist: %d, Timed Out: %v",
+		result.TotalProcessed, result.MatchedCount, result.UpdatedCount, result.CreatedCount, result.SkippedCount, result.ERPUsersCreated, result.ERPUsersAlready, result.TimedOut,
 	)
 	p.API.LogInfo(summary)
 
@@ -366,10 +418,14 @@ func (p *Plugin) SyncUsers(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// SyncEmployees syncs ERPNext employees with Mattermost users
+// SyncEmployees syncs ERPNext employees with Mattermost users - Enhanced for 500-700+ employees
 func (p *Plugin) SyncEmployees(w http.ResponseWriter, r *http.Request) {
 	// Log the start of function for debugging
 	p.API.LogInfo("SyncEmployees function started")
+
+	// Add timeout protection for large syncs
+	startTime := time.Now()
+	maxDuration := 20 * time.Minute // Increased timeout for large employee syncs
 
 	if p.erpNextClient == nil {
 		p.API.LogError("ERPNext client is not configured")
@@ -410,8 +466,8 @@ func (p *Plugin) SyncEmployees(w http.ResponseWriter, r *http.Request) {
 		p.API.LogInfo("custom_chat_id field already exists in ERPNext")
 	}
 
-	// Fetch all employees from ERPNext
-	p.API.LogInfo("Fetching ERPNext employees")
+	// Fetch all employees from ERPNext (now with enhanced pagination)
+	p.API.LogInfo("Fetching ERPNext employees with enhanced pagination")
 	employees, err := p.erpNextClient.GetEmployees()
 	if err != nil {
 		p.API.LogError("Failed to fetch employees from ERPNext", "error", err)
@@ -422,21 +478,40 @@ func (p *Plugin) SyncEmployees(w http.ResponseWriter, r *http.Request) {
 	// Log summary of employees fetched
 	p.API.LogInfo(fmt.Sprintf("Fetched %d employees from ERPNext", len(employees)))
 
-	// Build response data structure
+	// Build response data structure with enhanced tracking
 	type SyncResult struct {
-		MatchedCount int      `json:"matched_count"`
-		UpdatedCount int      `json:"updated_count"`
-		CreatedCount int      `json:"created_count"`
-		SkippedCount int      `json:"skipped_count"`
-		UserResults  []string `json:"user_results"`
+		MatchedCount   int      `json:"matched_count"`
+		UpdatedCount   int      `json:"updated_count"`
+		CreatedCount   int      `json:"created_count"`
+		SkippedCount   int      `json:"skipped_count"`
+		UserResults    []string `json:"user_results"`
+		TotalProcessed int      `json:"total_processed"`
+		TimedOut       bool     `json:"timed_out"`
+		ProcessingTime string   `json:"processing_time"`
 	}
 
 	result := SyncResult{
 		UserResults: []string{},
 	}
 
-	// Process each employee
-	for _, employee := range employees {
+	// Process each employee with enhanced progress tracking
+	for i, employee := range employees {
+		// Check for timeout
+		if time.Since(startTime) > maxDuration {
+			p.API.LogWarn("Employee sync operation reached maximum duration, stopping", "processed_employees", i)
+			result.UserResults = append(result.UserResults,
+				fmt.Sprintf("TIMEOUT: Sync stopped after processing %d employees due to timeout", i))
+			result.TimedOut = true
+			break
+		}
+
+		// Progress logging for large syncs
+		if i > 0 && i%25 == 0 {
+			elapsed := time.Since(startTime)
+			p.API.LogInfo(fmt.Sprintf("Employee sync progress: processed %d/%d employees (%.1f%%) in %v",
+				i, len(employees), float64(i)/float64(len(employees))*100, elapsed))
+		}
+
 		// Skip if employee has no company email
 		if employee.CompanyEmail == "" {
 			p.API.LogDebug("Skipping employee with no company email", "employee_id", employee.Name)
@@ -469,6 +544,8 @@ func (p *Plugin) SyncEmployees(w http.ResponseWriter, r *http.Request) {
 
 			// If we get here, the mapped user doesn't exist or is deleted
 			// We'll try to find a user by email or create a new one
+			p.API.LogDebug("Mapped user no longer exists, will search for existing or create new",
+				"employee_email", employee.CompanyEmail, "old_user_id", employee.CustomChatID)
 		}
 
 		// Try multiple approaches to find a Mattermost user with the same email
@@ -533,10 +610,21 @@ func (p *Plugin) SyncEmployees(w http.ResponseWriter, r *http.Request) {
 			// Generate username from name (slug of employee name)
 			username := p.GenerateUsername(employee.FirstName, employee.LastName)
 
+			// Check if username already exists and make it unique if needed
+			for retries := 0; retries < 5; retries++ {
+				_, userErr := p.API.GetUserByUsername(username)
+				if userErr != nil {
+					// Username doesn't exist, we can use it
+					break
+				}
+				// Username exists, add a suffix
+				username = fmt.Sprintf("%s_%d", p.GenerateUsername(employee.FirstName, employee.LastName), retries+1)
+			}
+
 			// Generate random password
 			password := p.GenerateRandomPassword(12)
 
-			// Create new user
+			// Create new user with enhanced error handling
 			newUser := &model.User{
 				Email:         employee.CompanyEmail,
 				Username:      username,
@@ -550,10 +638,28 @@ func (p *Plugin) SyncEmployees(w http.ResponseWriter, r *http.Request) {
 			if appErr != nil {
 				p.API.LogError("Failed to create Mattermost user",
 					"email", employee.CompanyEmail,
+					"username", username,
 					"error", appErr.Error())
-				result.UserResults = append(result.UserResults,
-					fmt.Sprintf("%s %s (%s) - User Creation Failed: %s", employee.FirstName, employee.LastName, employee.CompanyEmail, appErr.Error()))
-				continue
+
+				// Try with a different username if it's a username conflict
+				if strings.Contains(appErr.Error(), "username") {
+					// Generate a more unique username
+					timestamp := time.Now().Unix()
+					uniqueUsername := fmt.Sprintf("%s_%d", username, timestamp%10000)
+					newUser.Username = uniqueUsername
+
+					createdUser, appErr = p.API.CreateUser(newUser)
+					if appErr != nil {
+						result.UserResults = append(result.UserResults,
+							fmt.Sprintf("%s %s (%s) - User Creation Failed (retry): %s", employee.FirstName, employee.LastName, employee.CompanyEmail, appErr.Error()))
+						continue
+					}
+					username = uniqueUsername // Update for the response
+				} else {
+					result.UserResults = append(result.UserResults,
+						fmt.Sprintf("%s %s (%s) - User Creation Failed: %s", employee.FirstName, employee.LastName, employee.CompanyEmail, appErr.Error()))
+					continue
+				}
 			}
 
 			// Update the employee's custom_chat_id in ERPNext
@@ -566,6 +672,7 @@ func (p *Plugin) SyncEmployees(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				p.API.LogError("Failed to update employee custom_chat_id in ERPNext after user creation",
 					"employee_id", employee.Name,
+					"user_id", createdUser.Id,
 					"error", err)
 				result.UserResults = append(result.UserResults,
 					fmt.Sprintf("%s %s (%s) - User Created but Update Failed: %s", employee.FirstName, employee.LastName, employee.CompanyEmail, err.Error()))
@@ -591,10 +698,14 @@ func (p *Plugin) SyncEmployees(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Set final tracking values
+	result.TotalProcessed = result.MatchedCount + result.UpdatedCount + result.CreatedCount + result.SkippedCount
+	result.ProcessingTime = time.Since(startTime).String()
+
 	// Create response summary
 	summary := fmt.Sprintf(
-		"Sync completed. Matched: %d, Updated: %d, Created: %d, Skipped: %d",
-		result.MatchedCount, result.UpdatedCount, result.CreatedCount, result.SkippedCount,
+		"Employee sync completed in %s. Total Processed: %d, Matched: %d, Updated: %d, Created: %d, Skipped: %d, Timed Out: %v",
+		result.ProcessingTime, result.TotalProcessed, result.MatchedCount, result.UpdatedCount, result.CreatedCount, result.SkippedCount, result.TimedOut,
 	)
 	p.API.LogInfo(summary)
 

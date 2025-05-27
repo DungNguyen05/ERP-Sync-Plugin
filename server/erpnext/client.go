@@ -1,4 +1,4 @@
-// erpnext/client.go - Fixed version without Logger references
+// erpnext/client.go - Enhanced version for large employee syncing
 
 package erpnext
 
@@ -96,18 +96,21 @@ func NewClient(url, apiKey, apiSecret string) *Client {
 		APIKey:    apiKey,
 		APISecret: apiSecret,
 		HTTPClient: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: 30 * time.Second, // Increased timeout for large operations
 		},
 	}
 }
 
-// GetEmployees fetches all employees from ERPNext with pagination
+// GetEmployees fetches all employees from ERPNext with enhanced pagination
 func (c *Client) GetEmployees() ([]Employee, error) {
 	allEmployees := []Employee{}
-	pageSize := 100
+	pageSize := 200 // Increased page size for better performance
 	startIdx := 0
+	maxPages := 20 // Safety limit: 20 pages * 200 per page = 4000 employees max
 
-	for {
+	fmt.Printf("Starting to fetch employees from ERPNext...\n")
+
+	for page := 0; page < maxPages; page++ {
 		// Build URL with paging parameters and fields we need
 		baseURL := fmt.Sprintf("%s/api/resource/Employee", c.URL)
 		reqURL, err := url.Parse(baseURL)
@@ -120,7 +123,13 @@ func (c *Client) GetEmployees() ([]Employee, error) {
 		query.Add("limit_start", fmt.Sprintf("%d", startIdx))
 		query.Add("limit_page_length", fmt.Sprintf("%d", pageSize))
 		query.Add("fields", `["name", "company_email", "first_name", "last_name", "gender", "date_of_birth", "date_of_joining", "status", "custom_chat_id"]`)
+
+		// Add filter to get only active employees to improve performance
+		query.Add("filters", `[["status", "=", "Active"]]`)
+
 		reqURL.RawQuery = query.Encode()
+
+		fmt.Printf("Fetching page %d (start: %d, limit: %d)...\n", page+1, startIdx, pageSize)
 
 		// Create the request
 		req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
@@ -154,8 +163,12 @@ func (c *Client) GetEmployees() ([]Employee, error) {
 		// Add the fetched employees to our result array
 		allEmployees = append(allEmployees, employeeResp.Data...)
 
+		fmt.Printf("Page %d: fetched %d employees (total so far: %d)\n",
+			page+1, len(employeeResp.Data), len(allEmployees))
+
 		// If we got fewer records than the page size, we've reached the end
 		if len(employeeResp.Data) < pageSize {
+			fmt.Printf("Reached end of data at page %d\n", page+1)
 			break
 		}
 
@@ -163,6 +176,7 @@ func (c *Client) GetEmployees() ([]Employee, error) {
 		startIdx += pageSize
 	}
 
+	fmt.Printf("Completed fetching employees: %d total employees found\n", len(allEmployees))
 	return allEmployees, nil
 }
 
@@ -181,10 +195,11 @@ func (c *Client) GetEmployeeByEmail(email string) (*Employee, error) {
 	// Add query parameters
 	query := reqURL.Query()
 	query.Add("filters", filterParam)
+	query.Add("fields", `["name", "company_email", "first_name", "last_name", "gender", "date_of_birth", "date_of_joining", "status", "custom_chat_id"]`)
 	reqURL.RawQuery = query.Encode()
 
 	// Print the request URL for debugging (this would normally go to logs)
-	fmt.Printf("Making request to: %s\n", reqURL.String())
+	fmt.Printf("Making employee search request to: %s\n", reqURL.String())
 
 	// Now create the request with the properly encoded URL
 	req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
@@ -207,8 +222,8 @@ func (c *Client) GetEmployeeByEmail(email string) (*Employee, error) {
 	body, _ := io.ReadAll(resp.Body)
 
 	// Print response for debugging
-	fmt.Printf("Response status: %d\n", resp.StatusCode)
-	fmt.Printf("Response body: %s\n", string(body))
+	fmt.Printf("Employee search response status: %d\n", resp.StatusCode)
+	fmt.Printf("Employee search response body: %s\n", string(body))
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("ERPNext API returned non-OK status code %d: %s", resp.StatusCode, string(body))
@@ -256,7 +271,7 @@ func (c *Client) CreateEmployee(employee *Employee) (*Employee, error) {
 	}
 
 	// Print the request body for debugging
-	fmt.Printf("Request body: %s\n", string(bodyData))
+	fmt.Printf("Create employee request body: %s\n", string(bodyData))
 
 	// Create request
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(bodyData))
@@ -281,8 +296,8 @@ func (c *Client) CreateEmployee(employee *Employee) (*Employee, error) {
 	body, _ := io.ReadAll(resp.Body)
 
 	// Log the response for debugging
-	fmt.Printf("Response status: %d\n", resp.StatusCode)
-	fmt.Printf("Response body: %s\n", string(body))
+	fmt.Printf("Create employee response status: %d\n", resp.StatusCode)
+	fmt.Printf("Create employee response body: %s\n", string(body))
 
 	// Handle response
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
@@ -323,8 +338,8 @@ func (c *Client) UpdateEmployee(employee *Employee) (*Employee, error) {
 	}
 
 	// Print the request body for debugging
-	fmt.Printf("Update request to: %s\n", url)
-	fmt.Printf("Update request body: %s\n", string(bodyData))
+	fmt.Printf("Update employee request to: %s\n", url)
+	fmt.Printf("Update employee request body: %s\n", string(bodyData))
 
 	// Create PUT request for updating
 	req, err := http.NewRequest(http.MethodPut, url, bytes.NewBuffer(bodyData))
@@ -349,8 +364,8 @@ func (c *Client) UpdateEmployee(employee *Employee) (*Employee, error) {
 	body, _ := io.ReadAll(resp.Body)
 
 	// Log the response for debugging
-	fmt.Printf("Update response status: %d\n", resp.StatusCode)
-	fmt.Printf("Update response body: %s\n", string(body))
+	fmt.Printf("Update employee response status: %d\n", resp.StatusCode)
+	fmt.Printf("Update employee response body: %s\n", string(body))
 
 	// Handle response
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
@@ -619,9 +634,10 @@ func (c *Client) GetUserByEmail(email string) (*User, error) {
 
 	query := reqURL.Query()
 	query.Add("filters", filterParam)
+	query.Add("fields", `["name", "email", "first_name", "last_name", "username", "enabled", "role_profile_name"]`)
 	reqURL.RawQuery = query.Encode()
 
-	fmt.Printf("Making user request to: %s\n", reqURL.String())
+	fmt.Printf("Making user search request to: %s\n", reqURL.String())
 
 	req, err := http.NewRequest(http.MethodGet, reqURL.String(), nil)
 	if err != nil {
@@ -639,8 +655,8 @@ func (c *Client) GetUserByEmail(email string) (*User, error) {
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
-	fmt.Printf("User response status: %d\n", resp.StatusCode)
-	fmt.Printf("User response body: %s\n", string(body))
+	fmt.Printf("User search response status: %d\n", resp.StatusCode)
+	fmt.Printf("User search response body: %s\n", string(body))
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("ERPNext API returned non-OK status code %d: %s", resp.StatusCode, string(body))
